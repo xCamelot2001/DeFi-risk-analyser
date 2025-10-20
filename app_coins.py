@@ -1,234 +1,158 @@
-# app_coins.py
-# AI-Powered Coin Risk Analyzer (Streamlit MVP)
-# ---------------------------------------------
-# Install deps (inside your venv):
-#   pip install streamlit pandas numpy requests
-#
-# Run:
-#   streamlit run app_coins.py
-
 import streamlit as st
 import pandas as pd
-import numpy as np
-import requests
-from typing import Optional
-from urllib3.util.retry import Retry
-from requests.adapters import HTTPAdapter
 
-# ---------------- UI CONFIG ----------------
-st.set_page_config(page_title="Coin Risk Analyzer — MVP", layout="wide")
-st.title("Coin Risk Analyzer — MVP (Price-based)")
-
-st.sidebar.header("Settings")
-read_timeout = st.sidebar.slider(
-    "Read timeout (sec)", 30, 180, 90, step=15, key="read_timeout_sec"
+from src.coins_api import (
+    get_market_data,
+    get_historical_data,
+    parse_price_history,
+    compute_volatility,
+    compute_drawdown,
+    compute_sharpe,
+    compute_30d_return,
+    risk_score,
+    risk_bucket,
+    rolling_volatility,
+    rolling_max_drawdown,
 )
 
-vs_currency = st.sidebar.selectbox(
-    "Fiat", ["usd", "eur", "gbp"], index=0, key="fiat_select"
+from src.coins_risk import (
+    fetch_price_series,
+    corr_matrix,
+    var_historic,
+    cvar_historic,
+    beta_to,
+    log_returns,
+    portfolio_var_cvar,
 )
 
-days_back = st.sidebar.selectbox(
-    "History window (days)", ["14","30","90","180","365"], index=1, key="history_window"
-)
 
-# ------------- ROBUST HTTP SESSION ----------
-CG_SESSION: Optional[requests.Session] = None
-def _cg_session() -> requests.Session:
-    """Create a single session with retries/backoff."""
-    global CG_SESSION
-    if CG_SESSION is None:
-        s = requests.Session()
-        retries = Retry(
-            total=3,
-            backoff_factor=1.5,  # 0s, 1.5s, 3s...
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["GET"],
-            raise_on_status=False,
-        )
-        s.headers.update({"User-Agent": "defi-coin-risk-mvp/0.1"})
-        s.mount("https://", HTTPAdapter(max_retries=retries))
-        CG_SESSION = s
-    return CG_SESSION
+st.set_page_config(page_title="Coin Risk Analyzer", layout="wide")
+st.title("🪙 Coin Risk Analyzer")
 
-# ------------- DATA FETCH -------------------
-@st.cache_data(ttl=3600)
-def fetch_coingecko_market_chart(coin_id: str, vs="usd", days="max", read_to=90, interval="daily") -> pd.DataFrame:
-    """
-    Returns DataFrame with columns: date, price, mcap, volume for a coin.
-    Uses the free CoinGecko market_chart endpoint.
-    """
-    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
-    s = _cg_session()
-    try:
-        r = s.get(
-            url,
-            params={"vs_currency": vs, "days": days, "interval": interval},
-            timeout=(10, read_to),  # (connect, read)
-        )
-        if r.status_code == 429:
-            # rate limited — return empty but don't crash the UI
-            st.session_state.setdefault("errors", []).append(f"{coin_id}: 429 rate limited")
-            return pd.DataFrame(columns=["date", "price", "mcap", "volume"])
-        r.raise_for_status()
-        js = r.json()
+# ---------- Sidebar ----------
+with st.sidebar:
+    vs_currency = st.selectbox("Fiat Currency", ["usd", "eur", "gbp"], index=0, key="vs_currency_select")
+    days = st.slider("Lookback (days)", min_value=30, max_value=365, value=120, step=10, key="lookback_slider")
+    rf = st.number_input("Risk-free (annual, %)", min_value=0.0, max_value=20.0, value=4.5, step=0.1, key="rf_input") / 100.0
+    roll_vol_win = st.slider("Rolling Vol Window (days)", 14, 120, 30, step=7, key="roll_vol_win")
+    roll_mdd_win = st.slider("Rolling MDD Window (days)", 30, 180, 90, step=15, key="roll_mdd_win")
+    topn = st.slider("Compare Top N by Market Cap", 5, 30, 10, step=5, key="topn_slider")
 
-        def to_df(key, col):
-            arr = js.get(key, [])
-            df = pd.DataFrame(arr, columns=["ts_ms", col])
-            if df.empty:
-                return df
-            df["date"] = pd.to_datetime(df["ts_ms"], unit="ms", errors="coerce")
-            return df[["date", col]]
+# ---------- Select coin ----------
+market = get_market_data(vs_currency=vs_currency, per_page=topn)
+coins = [c["id"] for c in market]
+coin_choice = st.selectbox("Select a Coin", coins, key="coin_select")
 
-        p = to_df("prices", "price")
-        m = to_df("market_caps", "mcap")
-        v = to_df("total_volumes", "volume")
-        df = p.merge(m, on="date", how="outer").merge(v, on="date", how="outer")
-        df = df.dropna().sort_values("date")
-        return df
-    except requests.exceptions.RequestException as e:
-        st.session_state.setdefault("errors", []).append(f"{coin_id}: {e.__class__.__name__}")
-        return pd.DataFrame(columns=["date", "price", "mcap", "volume"])
+# ---------- Fetch & compute ----------
+raw = get_historical_data(coin_choice, vs_currency=vs_currency, days=days)
+df = parse_price_history(raw)
 
-# ------------- FEATURE ENGINEERING ----------
-def compute_coin_features(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df = df.dropna().sort_values("date")
-    # basic daily return (row-to-row), OK to keep for vol calc
-    df["ret"] = df["price"].pct_change().fillna(0.0)
+# Main chart
+st.subheader(f"Price — {coin_choice} ({vs_currency.upper()})")
+st.line_chart(df.set_index("date")["price"])
 
-    # precise 7-day return via timestamp, not row count
-    ret7 = _ret_over_days(df, 7)
-    df["ret_7d_exact"] = ret7  # same value on all rows; we’ll read the last one
+# Metrics
+vol = compute_volatility(df)
+mdd = compute_drawdown(df)
+sr = compute_sharpe(df, rf_annual=rf)
+r30 = compute_30d_return(df)
+score = risk_score(df)
+bucket = risk_bucket(score)
 
-    # realized vol proxy (still row-based; that’s fine for signal)
-    df["vol_7d"] = df["ret"].rolling(7).std().fillna(0.0).clip(0, 1)
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Volatility (Ann.)", f"{vol:.2%}" if pd.notna(vol) else "—")
+c2.metric("Max Drawdown", f"{mdd:.2%}" if pd.notna(mdd) else "—")
+c3.metric("Sharpe (Ann.)", f"{sr:.2f}" if pd.notna(sr) else "—")
+c4.metric("30-day Return", f"{r30:.2%}" if pd.notna(r30) else "—")
 
-    # 90-day max drawdown (use daily “as-of” to be robust)
-    # resample to 1D "close" to reduce intraday noise
-    d = df.set_index(pd.to_datetime(df["date"], utc=True)).sort_index()
-    d_daily = d["price"].resample("1D").last().dropna()
-    roll_max = d_daily.rolling(90, min_periods=1).max()
-    mdd_daily = (d_daily / roll_max) - 1.0
-    # map back last daily mdd to the dataframe’s last row
-    df["mdd_90d"] = mdd_daily.iloc[-1] if not mdd_daily.empty else 0.0
+st.info(f"Risk Score: **{score:.1f} / 100** → **{bucket}**")
 
-    # volume spike vs 30d average (use daily sum for stability)
-    if "volume" in d.columns:
-        v_daily = d["volume"].resample("1D").sum().replace(0, np.nan)
-        v30 = v_daily.rolling(30).mean()
-        spike = ((v_daily.iloc[-1] / v30.iloc[-1]) - 1.0) if (len(v_daily) >= 30 and v30.iloc[-1] not in [0, np.nan]) else 0.0
-        df["vol_spike"] = float(np.clip((spike if np.isfinite(spike) else 0.0), 0, 3) / 3.0)
-    else:
-        df["vol_spike"] = 0.0
+# Rolling risk charts
+rv = rolling_volatility(df, window=roll_vol_win)
+rm = rolling_max_drawdown(df, window=roll_mdd_win)
 
-    return df
+st.subheader("Rolling Risk")
+tab1, tab2 = st.tabs(["Rolling Volatility (Ann.)", "Rolling Max Drawdown"])
+with tab1:
+    if not rv.empty:
+        st.line_chart(rv.set_index("date")["rolling_vol"])
+with tab2:
+    if not rm.empty:
+        st.line_chart(rm.set_index("date")["rolling_mdd"])
 
-def _ret_over_days(df: pd.DataFrame, days: int) -> float:
-    """
-    Compute calendar-day return using timestamps:
-    ret_days = (P_t / P_{t-days} - 1)
-    We match the price at or BEFORE the target timestamp.
-    """
-    if df.empty or "date" not in df or "price" not in df:
-        return np.nan
+st.header("🧪 Risk Lab")
 
-    # ensure sorted and datetime index
-    d = df[["date", "price"]].dropna().sort_values("date").copy()
-    d["date"] = pd.to_datetime(d["date"], utc=True)
-    d = d.set_index("date")
+# Controls
+alpha = st.slider("Confidence (VaR/CVaR)", 0.80, 0.99, 0.95, 0.01, key="alpha_slider")
+benchmark = st.selectbox("Benchmark for Beta", ["bitcoin", "ethereum"], index=0, key="bench_select")
 
-    t_last = d.index[-1]
-    t_target = t_last - pd.Timedelta(days=days)
+# Fetch prices for selected set (Top N for matrix + current coin for single metrics)
+price_map = fetch_price_series(coins, vs_currency=vs_currency, days=days)
 
-    # get the last price at or before t_target (asof)
-    # reindex with the union so asof works cleanly
-    d_target = d.reindex(d.index.union([t_target]))
-    # .asof returns the last valid value before/at the label
-    p_target = d_target["price"].asof(t_target)
-    p_last = float(d["price"].iloc[-1])
+# Correlation matrix
+st.subheader("Correlation (Top N)")
+corr = corr_matrix(price_map)
+if not corr.empty:
+    st.dataframe(corr.style.format("{:.2f}"), use_container_width=True)
+else:
+    st.write("Not enough data to compute correlations.")
 
-    if p_target is None or np.isnan(p_target) or p_target == 0:
-        return np.nan
-    return (p_last / float(p_target)) - 1.0
+# Single-asset VaR/CVaR & Beta
+st.subheader(f"{coin_choice} — VaR / CVaR / Beta")
+coin_returns = log_returns(parse_price_history(get_historical_data(coin_choice, vs_currency=vs_currency, days=days)))
+bench_returns = log_returns(parse_price_history(get_historical_data(benchmark, vs_currency=vs_currency, days=days)))
 
-def coin_risk_score(ret_7d_exact, vol_7d, mdd_90d, vol_spike) -> int:
-    """
-    0..100 risk score combining:
-      - recent drop (ret_7d negative),
-      - drawdown (mdd_90d),
-      - volatility,
-      - volume spike.
-    """
-    drawdown_term = np.clip(-float(ret_7d_exact), 0, 1)  # only penalize negative
-    mdd_term      = np.clip(-float(mdd_90d), 0, 1)
-    vol_term      = np.clip(float(vol_7d), 0, 1)
-    spike_term    = np.clip(float(vol_spike), 0, 1)
-    raw = 0.45*drawdown_term + 0.25*mdd_term + 0.20*vol_term + 0.10*spike_term
-    return float(100 * np.clip(raw, 0, 1))
+VaR = var_historic(coin_returns, alpha=alpha)
+CVaR = cvar_historic(coin_returns, alpha=alpha)
+beta = beta_to(coin_returns, bench_returns)
 
-def risk_bucket(score: float) -> str:
-    if score >= 61: return "High"
-    if score >= 31: return "Medium"
-    return "Low"
+c1, c2, c3 = st.columns(3)
+c1.metric(f"VaR {int(alpha*100)}% (daily)", f"{VaR:.2%}" if pd.notna(VaR) else "—")
+c2.metric(f"CVaR {int(alpha*100)}% (daily)", f"{CVaR:.2%}" if pd.notna(CVaR) else "—")
+c3.metric(f"Beta vs {benchmark.upper()}", f"{beta:.2f}" if pd.notna(beta) else "—")
 
-# ------------- UI: COIN PICKER -------------
-coin_ids = st.multiselect(
-    "Pick coins (CoinGecko ids):",
-    [
-        "bitcoin", "ethereum", "solana", "chainlink", "uniswap",
-        "aave", "dogecoin", "pepe", "arbitrum", "optimism"
-    ],
-    default=["bitcoin", "ethereum", "chainlink"]
-)
+# Portfolio VaR/CVaR (equal weight across Top N)
+st.subheader(f"Equal-Weight Portfolio (Top {len(coins)}) — VaR / CVaR")
+p_VaR, p_CVaR = portfolio_var_cvar(price_map, alpha=alpha)
+d1, d2 = st.columns(2)
+d1.metric(f"Portfolio VaR {int(alpha*100)}% (daily)", f"{p_VaR:.2%}" if pd.notna(p_VaR) else "—")
+d2.metric(f"Portfolio CVaR {int(alpha*100)}% (daily)", f"{p_CVaR:.2%}" if pd.notna(p_CVaR) else "—")
 
-if st.button("Update data"):
-    st.cache_data.clear()
-
-# ------------- MAIN LOOP -------------------
+# ---------- Top-N comparison ----------
+st.subheader(f"Top {topn} Coins — Risk Snapshot")
 rows = []
-charts = st.container()
+for c in coins:
+    h = get_historical_data(c, vs_currency=vs_currency, days=days)
+    d = parse_price_history(h)
+    if len(d) < 5:
+        continue
+    v = compute_volatility(d)
+    dd = compute_drawdown(d)
+    s = compute_sharpe(d, rf_annual=rf)
+    r = compute_30d_return(d)
+    sc = risk_score(d)
+    rows.append({
+        "coin": c,
+        "vol_ann": v,
+        "mdd": dd,
+        "sharpe": s,
+        "ret_30d": r,
+        "risk_score": sc,
+        "bucket": risk_bucket(sc),
+    })
 
-with st.spinner("Fetching coin data & computing risk..."):
-    for cid in coin_ids:
-        df = fetch_coingecko_market_chart(cid, vs=vs_currency, days="7", read_to=read_timeout, interval="daily")
-        if df.empty:
-            rows.append({"coin": cid, "risk": None, "bucket": "-", "note": "No data"})
-            continue
+if rows:
+    table = pd.DataFrame(rows)
+    # Sort by risk_score ascending (safer at top)
+    table = table.sort_values("risk_score", ascending=True, na_position="last")
+    # Pretty formatting for display
+    show = table.copy()
+    show["vol_ann"] = show["vol_ann"].map(lambda x: f"{x:.2%}" if pd.notna(x) else "—")
+    show["mdd"] = show["mdd"].map(lambda x: f"{x:.2%}" if pd.notna(x) else "—")
+    show["ret_30d"] = show["ret_30d"].map(lambda x: f"{x:.2%}" if pd.notna(x) else "—")
+    show["sharpe"] = show["sharpe"].map(lambda x: f"{x:.2f}" if pd.notna(x) else "—")
+    show["risk_score"] = show["risk_score"].map(lambda x: f"{x:.1f}" if pd.notna(x) else "—")
 
-        feats = compute_coin_features(df)
-        latest = feats.iloc[-1]
-        score = coin_risk_score(latest["ret_7d_exact"], latest["vol_7d"], latest["mdd_90d"], latest["vol_spike"])
-
-        rows.append({
-            "coin": cid,
-            "risk": score,
-            "ret_7d_exact%": round(100*latest["ret_7d_exact"], 2),
-            "vol_7d": round(latest["vol_7d"], 4),
-            "mdd_90d%": round(100*latest["mdd_90d"], 2),
-            "vol_spike": round(latest["vol_spike"], 3),
-            "price": round(df["price"].iloc[-1], 4),
-        })
-
-        with charts.expander(f"{cid} — charts"):
-            st.line_chart(df.set_index("date")["price"], height=180)
-            st.line_chart(
-                feats.set_index("date")[["ret_7d_exact", "vol_7d", "mdd_90d", "vol_spike"]],
-                height=220
-            )
-
-# ------------- TABLE + ERRORS --------------
-table = pd.DataFrame(rows)
-st.subheader("Coin Risk Table (price-based MVP)")
-st.dataframe(table, width="stretch")
-
-errs = st.session_state.get("errors", [])
-if errs:
-    st.warning("Some requests failed:\n- " + "\n- ".join(errs))
-    st.session_state["errors"] = []
-
-st.caption(
-    "Notes: risk uses price & volume features only (no on-chain yet). "
-    "Next steps: add DEX liquidity depth, holder concentration, funding/OI, and sentiment."
-)
+    st.dataframe(show.reset_index(drop=True), use_container_width=True)
+else:
+    st.write("No data available for comparison.")

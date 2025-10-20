@@ -1,0 +1,9 @@
+streamlit
+pandas
+numpy
+scikit-learn
+requests
+plotly
+shap
+tenacity
+joblib

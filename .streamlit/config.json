@@ -1,0 +1,14 @@
+{
+  "theme": {
+    "base": "dark",
+    "primaryColor": "#22c55e",
+    "backgroundColor": "#0f1116",
+    "secondaryBackgroundColor": "#1b1f2a",
+    "textColor": "#ffffff"
+  },
+  "server": {
+    "headless": true,
+    "enableCORS": false,
+    "port": 7860
+  }
+}

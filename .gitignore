@@ -1,1 +1,25 @@
-.venv
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Envs
+.venv/
+venv/
+.env
+
+# OS
+.DS_Store
+
+# Caches
+.cache/
+.cache_api/
+data/cache/
+.streamlit/cache/
+
+# Models (optional: keep if you plan to commit)
+models/*.pkl
