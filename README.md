@@ -11,7 +11,7 @@ pinned: false
 
 # DeFi Risk Analyzer — Streamlit + DeFiLlama
 
-Live demo: **(add your HF Space URL here)**
+Live demo: **https://huggingface.co/spaces/hosseinmasjedi/defi-risk-analyser**
 
 ## What it does
 
