@@ -1,3 +1,14 @@
+---
+title: DeFi Risk Analyzer
+emoji: 🪙
+colorFrom: indigo
+colorTo: blue
+sdk: streamlit
+sdk_version: "1.38.0"
+app_file: app.py
+pinned: false
+---
+
 # DeFi Risk Analyzer — Streamlit + DeFiLlama
 
 Live demo: **(add your HF Space URL here)**
