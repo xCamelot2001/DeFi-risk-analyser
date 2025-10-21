@@ -26,5 +26,5 @@ Live demo: **https://huggingface.co/spaces/hosseinmasjedi/defi-risk-analyser**
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-streamlit run app.py
+streamlit run app_coins.py
 ```
