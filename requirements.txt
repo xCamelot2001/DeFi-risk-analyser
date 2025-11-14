@@ -8,3 +8,5 @@ shap
 tenacity
 joblib
 pytest
+fastapi
+uvicorn

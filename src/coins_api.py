@@ -209,3 +209,35 @@ def risk_bucket(score: float) -> str:
     if score < 66:
         return "Medium"
     return "High"
+
+
+# for end-to-end usage
+def compute_coin_risk_summary(
+    coin_id: str,
+    vs_currency: str = "usd",
+    days: int = 90,
+) -> dict:
+    """
+    End-to-end: download history, compute metrics, return a summary dict.
+    """
+    data = get_historical_data(coin_id=coin_id, vs_currency=vs_currency, days=days)
+    df = parse_price_history(data)
+
+    vol = compute_volatility(df)
+    mdd = compute_drawdown(df)
+    sharpe = compute_sharpe(df)
+    ret_30d = compute_30d_return(df)
+    score = risk_score(df)
+    bucket = risk_bucket(score)
+
+    return {
+        "coin_id": coin_id,
+        "vs_currency": vs_currency,
+        "days": days,
+        "volatility": vol,
+        "max_drawdown": mdd,
+        "sharpe": sharpe,
+        "return_30d": ret_30d,
+        "score": score,
+        "bucket": bucket,
+    }
