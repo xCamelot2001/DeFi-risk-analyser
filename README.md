@@ -5,7 +5,6 @@
 [![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.38.0-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io/)
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-HuggingFace%20Spaces-yellow?logo=huggingface)](https://huggingface.co/spaces/hosseinmasjedi/defi-risk-analyser)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 **Live demo →** [huggingface.co/spaces/hosseinmasjedi/defi-risk-analyser](https://huggingface.co/spaces/hosseinmasjedi/defi-risk-analyser)
 
@@ -148,7 +147,3 @@ Contributions are welcome! Please open an issue to discuss what you'd like to ch
 This project is for **educational and research purposes only**. Nothing in this dashboard constitutes financial advice. DeFi carries significant risk — always do your own research.
 
 ---
-
-## License
-
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
